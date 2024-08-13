@@ -80,7 +80,7 @@ public:
         const auto thr_max = threadMax();
         for (unsigned i = 0; i < thr_max; ++i) {
             ClientConnection cc( ip::tcp::socket{m_service}, ep, m_dl );
-            m_tp.add_thread(std::thread([this, cc = std::move(cc)]() mutable { connection_handler(std::move(cc)); }));
+            m_tp.create_thread([this, cc = std::move(cc)]() mutable { connection_handler(std::move(cc)); });
         }
         m_tp.join_all();
     }

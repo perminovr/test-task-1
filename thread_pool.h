@@ -13,6 +13,11 @@ public:
         m_threads.push_back( std::move(t) );
     }
 
+    template<class F>
+    void create_thread(F&& f) {
+        m_threads.push_back( std::thread(std::forward<F>(f)) );
+    }
+
     void join_all() {
         for (auto &t : m_threads) {
             if (t.joinable()) {

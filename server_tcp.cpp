@@ -41,7 +41,7 @@ public:
             boost::system::error_code ec;
             auto client = m_acceptor.accept(ec);
             if (ec) { client.close(); continue; }
-            m_tp.add_thread(std::thread([this, client = std::move(client) ]() mutable { client_handler(std::move(client)); }));
+            m_tp.create_thread([this, client = std::move(client) ]() mutable { client_handler(std::move(client)); });
         }
         m_tp.join_all();
     }
