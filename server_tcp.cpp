@@ -1,8 +1,6 @@
 #include "server_tcp.h"
 #include "thread_pool.h"
-#include <boost/asio/io_service.hpp>
-#include <boost/asio/ip/address.hpp>
-#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio.hpp>
 #include <boost/thread.hpp>
 #include <thread>
 #include <iostream>
@@ -69,7 +67,7 @@ protected:
             auto dataLen = m_block->getBlockSize(hash);
             auto ch = reinterpret_cast<common::BlockMsgHeader *>(data);
             ch->blockSize = dataLen;
-            auto wlen = client.write_some(buffer(ch, sizeof(common::BlockMsgHeader)), ec);
+            auto wlen = boost::asio::write(client, buffer(ch, sizeof(common::BlockMsgHeader)), ec);
             if (ec || wlen < sizeof(common::BlockMsgHeader)) { return; }
             // chunk data
             std::cout << "sending data [" << client_port << "] " << dataLen << std::endl;
@@ -77,8 +75,8 @@ protected:
             while (dataLen) {
                 size_t bufsz = dataLen < common::CHUNK_SIZE? dataLen : common::CHUNK_SIZE; // trick
                 len = m_block->getBlockData(hash, data, bufsz); // there is no method to get chunk. get bufsz (offs unused)
-                if (ec || len <= 0) { break; }
-                wlen = client.write_some(buffer(data, len));
+                if (len <= 0) { break; }
+                wlen = boost::asio::write(client, buffer(data, len));
                 if (ec || wlen < len) { return; }
                 dataLen -= len;
                 offs += len;

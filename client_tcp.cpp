@@ -1,8 +1,6 @@
 #include "client_tcp.h"
 #include "thread_pool.h"
-#include <boost/asio/io_service.hpp>
-#include <boost/asio/ip/address.hpp>
-#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio.hpp>
 #include <boost/thread.hpp>
 #include <iostream>
 
@@ -42,7 +40,7 @@ public:
             auto hash = m_dl->getNext();
             if (!hash) { return; }
             // hash to server
-            auto wlen = m_sock.write_some(buffer(hash->c_str(), common::HASH_SIZE), ec);
+            auto wlen = boost::asio::write(m_sock, buffer(hash->c_str(), common::HASH_SIZE), ec);
             if (ec || wlen < common::HASH_SIZE) { return; }
             // get block header
             auto len = m_sock.read_some(buffer(&h, sizeof(h)), ec);
