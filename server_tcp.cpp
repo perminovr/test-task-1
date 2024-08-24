@@ -102,10 +102,13 @@ protected:
             return std::bind(f, shared_from_this(), std::placeholders::_1,  std::placeholders::_2);
         }
         void async_read_hash() {
-            m_sock.async_read_some(buffer(&m_hash[0], common::HASH_SIZE), bind(&Client::hash_handler));
+            m_sock.async_wait(ip::tcp::socket::wait_read, std::bind(&Client::hash_handler, shared_from_this(), std::placeholders::_1));
         }
-        void hash_handler(const boost::system::error_code& ec, std::size_t bytes) {
+        void hash_handler(boost::system::error_code ec) {
+            if (ec) { return; }
+            auto bytes = m_sock.available(ec);
             if (ec || bytes < common::HASH_SIZE) { return; } // may end here
+            m_sock.read_some(buffer(&m_hash[0], common::HASH_SIZE));
             m_hash[common::HASH_SIZE] = '\0';
             m_msgHeader.blockSize = m_block->getBlockSize(m_hash);
             std::cout << "sending data [" << m_port << "] " << m_msgHeader.blockSize << std::endl;
