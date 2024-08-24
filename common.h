@@ -8,6 +8,7 @@ namespace common {
 constexpr const unsigned TCP_SERVER_PORT = 10001;
 constexpr const unsigned CHUNK_SIZE = (1<<20);
 constexpr const unsigned HASH_SIZE = 128;
+constexpr const unsigned SERVER_THREADS_MAX = 16;
 
 struct BlockMsgHeader {
     unsigned blockSize;

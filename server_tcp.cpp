@@ -10,7 +10,8 @@ using namespace boost::asio;
 /*
 
 Сервер работает на одном сокете TCP
-По подключению клиента создается поток для обработки соединения
+При создании сервера создается заданное число потоков для обработки клиентов
+Нагрузка по потокам распределяется с помощью boost::io_service
 В одном соединении может обрабатываться последовательно несколько блоков
 После подключения клиент передает хэши
 Хэш блоков извлекается из потока TCP по одному
@@ -27,9 +28,13 @@ public:
     explicit Impl(std::shared_ptr<IBlock> block) 
         : 
         m_block(std::move(block)),
+        m_work {boost::asio::make_work_guard(m_service)}, 
         m_acceptor {m_service, ip::tcp::endpoint(ip::tcp::v4(), common::TCP_SERVER_PORT)},
         m_sock {m_service}
     {
+        for (unsigned i = 0; i < common::SERVER_THREADS_MAX; ++i) {
+            m_tp.create_thread(std::bind(&ServerTcp::Impl::thread_handler, this));
+        }
     }
     ~Impl() = default;
 
@@ -39,7 +44,7 @@ public:
             boost::system::error_code ec;
             auto client = m_acceptor.accept(ec);
             if (ec) { client.close(); continue; }
-            m_tp.create_thread([this, client = std::move(client) ]() mutable { client_handler(std::move(client)); });
+            client_handler(client);
         }
         m_tp.join_all();
     }
@@ -48,40 +53,94 @@ protected:
     std::shared_ptr<IBlock> m_block;
     ThreadPool m_tp;
     io_service m_service;
+    executor_work_guard<io_context::executor_type> m_work;
     ip::tcp::acceptor m_acceptor;
     ip::tcp::socket m_sock;
 
-    void client_handler(ip::tcp::socket client) {
-        boost::system::error_code ec;
-        char data[common::CHUNK_SIZE];
-        std::string hash;
-        hash.reserve(common::HASH_SIZE+1);
-        auto client_port = client.remote_endpoint().port();
-        std::cout << "handling client [" << client_port << "] " << std::endl;
-        // handle hashes
-        for (;;) {
-            auto len = client.read_some(buffer(&hash[0], common::HASH_SIZE), ec);
-            if (ec || len < common::HASH_SIZE) { return; }
-            hash[common::HASH_SIZE] = '\0';
-            // data info
-            auto dataLen = m_block->getBlockSize(hash);
-            auto ch = reinterpret_cast<common::BlockMsgHeader *>(data);
-            ch->blockSize = dataLen;
-            auto wlen = boost::asio::write(client, buffer(ch, sizeof(common::BlockMsgHeader)), ec);
-            if (ec || wlen < sizeof(common::BlockMsgHeader)) { return; }
-            // chunk data
-            std::cout << "sending data [" << client_port << "] " << dataLen << std::endl;
-            size_t offs = 0;
-            while (dataLen) {
-                size_t bufsz = dataLen < common::CHUNK_SIZE? dataLen : common::CHUNK_SIZE; // trick
-                len = m_block->getBlockData(hash, data, bufsz); // there is no method to get chunk. get bufsz (offs unused)
-                if (len <= 0) { break; }
-                wlen = boost::asio::write(client, buffer(data, len));
-                if (ec || wlen < len) { return; }
-                dataLen -= len;
-                offs += len;
-            }
+    void thread_handler() {
+        m_service.run();
+    }
+
+    struct Client : public std::enable_shared_from_this<Client> {
+        static auto create(ip::tcp::socket &s, std::shared_ptr<IBlock> block) {
+            return std::make_shared<Client>(s, std::move(block));
         }
+        void start_process() { 
+            std::cout << "handling client [" << m_port << "] " << std::endl;
+            async_read_hash();
+        }
+
+        Client(const Client&) = delete;
+        Client(Client&&) = delete;
+        Client& operator=(const Client&) = delete;
+        Client& operator=(Client&&) = delete;
+
+        Client(ip::tcp::socket &s, std::shared_ptr<IBlock> block) 
+            : 
+            m_sock(std::move(s)),
+            m_block(std::move(block))
+        {
+            m_port = m_sock.remote_endpoint().port();
+            m_hash.reserve(common::HASH_SIZE+1);
+        }
+        ~Client(){}
+
+    protected:
+        ip::tcp::socket m_sock;
+        std::shared_ptr<IBlock> m_block;
+        unsigned short m_port;
+        std::string m_hash;
+        common::BlockMsgHeader m_msgHeader;
+        struct {
+            char d[common::CHUNK_SIZE];
+            size_t len;
+            size_t offs;
+        } m_chunk;
+
+        template<typename F>
+        constexpr auto bind(F f) {
+            return std::bind(f, shared_from_this(), std::placeholders::_1,  std::placeholders::_2);
+        }
+        void async_read_hash() {
+            m_sock.async_read_some(buffer(&m_hash[0], common::HASH_SIZE), bind(&Client::hash_handler));
+        }
+        void hash_handler(const boost::system::error_code& ec, std::size_t bytes) {
+            if (ec || bytes < common::HASH_SIZE) { return; } // may end here
+            m_hash[common::HASH_SIZE] = '\0';
+            m_msgHeader.blockSize = m_block->getBlockSize(m_hash);
+            std::cout << "sending data [" << m_port << "] " << m_msgHeader.blockSize << std::endl;
+            m_sock.async_send(buffer(&m_msgHeader, sizeof(common::BlockMsgHeader)), bind(&Client::header_sent_handler));
+        }
+        void header_sent_handler(const boost::system::error_code& ec, std::size_t bytes) {
+            if (ec || bytes < sizeof(common::BlockMsgHeader)) { return; }
+            m_chunk.offs = 0;
+            if (m_msgHeader.blockSize <= 0) { // next block
+                async_read_hash();
+                return;
+            }
+            async_write_chunk();
+        }
+        void async_write_chunk() {
+            auto dataLen = m_msgHeader.blockSize;
+            size_t bufsz = dataLen < common::CHUNK_SIZE? dataLen : common::CHUNK_SIZE; // trick
+            m_chunk.len = m_block->getBlockData(m_hash, m_chunk.d, bufsz); // there is no method to get chunk. get bufsz (offs unused)
+            if (m_chunk.len <= 0) { // next block
+                async_read_hash();
+                return;
+            }
+            m_sock.async_send(buffer(m_chunk.d, m_chunk.len), bind(&Client::chunk_sent_handler));
+        }
+        void chunk_sent_handler(const boost::system::error_code& ec, std::size_t bytes) {
+            if (ec || bytes < m_chunk.len) { return; }
+            m_chunk.offs += bytes;
+            m_msgHeader.blockSize -= bytes;
+            async_write_chunk();
+        }
+    };
+
+    void client_handler(ip::tcp::socket &sock) {
+        auto c = Client::create(sock, m_block);
+        c->start_process(); // auto destroy inside
     }
 };
 
