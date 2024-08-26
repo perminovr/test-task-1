@@ -1,6 +1,7 @@
 #include "client_tcp.h"
 #include "thread_pool.h"
 #include <boost/asio.hpp>
+#include <boost/asio/ssl.hpp>
 #include <boost/thread.hpp>
 #include <iostream>
 
@@ -19,12 +20,13 @@ using namespace boost::asio;
 
 class ClientConnection {
 public:
-    explicit ClientConnection(ip::tcp::socket sock, ip::tcp::endpoint server_ep, std::shared_ptr<IDataList> dl)
+    explicit ClientConnection(ssl::stream<ip::tcp::socket> sock, ip::tcp::endpoint server_ep, std::shared_ptr<IDataList> dl)
         : 
         m_sock(std::move(sock)), 
         m_server_ep(server_ep),
         m_dl(std::move(dl))
     {
+        m_sock.set_verify_mode(boost::asio::ssl::verify_peer);
     }
 
     void process() {
@@ -32,9 +34,11 @@ public:
         char data[common::CHUNK_SIZE];
         common::BlockMsgHeader h;
         // connect to server
-        m_sock.connect(m_server_ep, ec);
+        m_sock.lowest_layer().connect(m_server_ep, ec);
         if (ec) { return; }
-        auto client_port = m_sock.local_endpoint().port();
+        m_sock.handshake(ssl::stream_base::client, ec);
+        if (ec) { return; }
+        auto client_port = m_sock.lowest_layer().local_endpoint().port();
         // handle blocks
         for (;;) {
             auto hash = m_dl->getNext();
@@ -59,7 +63,7 @@ public:
     }
 
 protected:
-    ip::tcp::socket m_sock;
+    ssl::stream<ip::tcp::socket> m_sock;
     ip::tcp::endpoint m_server_ep;
     std::shared_ptr<IDataList> m_dl;
 };
@@ -68,8 +72,10 @@ class ClientTcp::Impl {
 public:
     explicit Impl(std::shared_ptr<IDataList> dl) 
         : 
-        m_dl(std::move(dl))
+        m_dl(std::move(dl)),
+        m_context {ssl::context::sslv23}
     {
+        m_context.load_verify_file(common::ROOTCA_CRT);
     }
     ~Impl() = default;
 
@@ -77,7 +83,7 @@ public:
         ip::tcp::endpoint ep {ip::tcp::v4(), common::TCP_SERVER_PORT};
         const auto thr_max = threadMax();
         for (unsigned i = 0; i < thr_max; ++i) {
-            ClientConnection cc( ip::tcp::socket{m_service}, ep, m_dl );
+            ClientConnection cc( ssl::stream<ip::tcp::socket>{m_service, m_context}, ep, m_dl );
             m_tp.create_thread([this, cc = std::move(cc)]() mutable { connection_handler(std::move(cc)); });
         }
         m_tp.join_all();
@@ -87,6 +93,7 @@ protected:
     std::shared_ptr<IDataList> m_dl;
     io_service m_service;
     ThreadPool m_tp;
+    ssl::context m_context;
 
     void connection_handler(ClientConnection cc) {
         cc.process();
