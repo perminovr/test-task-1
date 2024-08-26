@@ -122,7 +122,7 @@ protected:
             async_read_hash();
         }
         void async_read_hash() {
-            async_read(m_sock, buffer(m_hash, common::HASH_SIZE), bind(&Client::hash_handler));
+            async_read(m_sock, buffer(&m_hash[0], common::HASH_SIZE), bind(&Client::hash_handler));
         }
         void hash_handler(const boost::system::error_code& ec, size_t bytes) {
             if (ec || bytes < common::HASH_SIZE) { return; } // may end here
